@@ -388,7 +388,9 @@ ensureUsersTable()
         setInterval(CheckCanceles, 3600000);
     })
     .catch((error) => {
-        bot.sendMessage(errChannel, `ERROR DB INIT:\n${error}`);
+        console.error(`ERROR DB INIT:\n${error.message}\n${error.stack}`);
+        bot.sendMessage(errChannel, `ERROR DB INIT:\n${error.message}\n${error.stack}`)
+            .finally(() => process.exit(1));
     });
 setInterval(() => Object.assign(prevData, {}), 86400000)
 // on messages

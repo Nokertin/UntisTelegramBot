@@ -72,7 +72,7 @@ After that set the same credentials in `config.json`.
 
 - WebUntis credentials are stored encrypted (AES).
 - Keep `UNTIS_CREDENTIALS_KEY` secret.
-- Use the same key across restarts, otherwise old encrypted data cannot be decrypted.
+- ⚠️ Use the same key across restarts, otherwise old encrypted data cannot be decrypted.
 
 ## License
 

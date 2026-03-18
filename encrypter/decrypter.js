@@ -1,6 +1,9 @@
 const crypto = require('crypto');
 
-const SECRET_KEY = process.env.UNTIS_CREDENTIALS_KEY || 'change-me-in-production';
+const SECRET_KEY = process.env.UNTIS_CREDENTIALS_KEY;
+if (!SECRET_KEY) {
+  throw new Error('UNTIS_CREDENTIALS_KEY is required');
+}
 const KEY = crypto.createHash('sha256').update(SECRET_KEY).digest();
 
 const decrypt = (text) => {
@@ -23,7 +26,7 @@ const decrypt = (text) => {
     ]);
     return decrypted.toString('utf8');
   } catch (error) {
-    return text;
+    return '';
   }
 }
 
