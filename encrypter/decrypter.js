@@ -1,9 +1,33 @@
-const {reversedLatinMap, reversedCyrillicMap, reversedDigitsMap, reversedSymbolsMap} = require('./maps.js')
+const crypto = require('crypto');
+
+const SECRET_KEY = process.env.UNTIS_CREDENTIALS_KEY;
+if (!SECRET_KEY) {
+  throw new Error('UNTIS_CREDENTIALS_KEY is required');
+}
+const KEY = crypto.createHash('sha256').update(SECRET_KEY).digest();
+
 const decrypt = (text) => {
-    return text      
-    .replace(/[A-Za-z]/g, (match) => reversedLatinMap[match] || match)  
-    .replace(/[А-Яа-я]/g, (match) => reversedCyrillicMap[match] || match) 
-    .replace(/[0-9]/g, (match) => reversedDigitsMap[match] || match)    
-    .replace(/[^A-Za-z0-9А-Яа-я]/g, (match) => reversedSymbolsMap[match] || match); 
+  if (typeof text !== 'string' || text.length === 0) {
+    return '';
   }
-  module.exports = Object.assign(decrypt, { default: decrypt });
+
+  const parts = text.split(':');
+  if (parts.length !== 3) {
+    return text;
+  }
+
+  try {
+    const [ivHex, tagHex, encryptedHex] = parts;
+    const decipher = crypto.createDecipheriv('aes-256-gcm', KEY, Buffer.from(ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(encryptedHex, 'hex')),
+      decipher.final()
+    ]);
+    return decrypted.toString('utf8');
+  } catch (error) {
+    return '';
+  }
+}
+
+module.exports = Object.assign(decrypt, { default: decrypt });

@@ -1,9 +1,19 @@
-const {latinMap, cyrillicMap, digitsMap, symbolsMap} = require('./maps.js')
+const crypto = require('crypto');
+
+const SECRET_KEY = process.env.UNTIS_CREDENTIALS_KEY;
+if (!SECRET_KEY) {
+  throw new Error('UNTIS_CREDENTIALS_KEY is required');
+}
+const KEY = crypto.createHash('sha256').update(SECRET_KEY).digest();
+
 const encrypt = (text) => {
-    return text
-      .replace(/[A-Za-z]/g, (match) => latinMap[match] || match)  
-      .replace(/[А-Яа-я]/g, (match) => cyrillicMap[match] || match) 
-      .replace(/[0-9]/g, (match) => digitsMap[match] || match)    
-      .replace(/[^A-Za-z0-9А-Яа-я]/g, (match) => symbolsMap[match] || match); 
-  };  
-  module.exports = Object.assign(encrypt, { default: encrypt });
+  const value = `${text ?? ''}`;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+};
+
+module.exports = Object.assign(encrypt, { default: encrypt });
