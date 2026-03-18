@@ -1,56 +1,79 @@
-#⚠️ Notice
-
-The current instructions for running this bot in this README is incorrect(databease setup is not mentioned).
-
-This project is archived and is not intended for production use at the moment. It will be unarchived when an update is made that brings it to a production-ready state.
 # UntisBot
-UntisBot is a multiple language(Russian, English, German) Telegram bot designed to help you stay updated with your school Timelible. It provides various features to ensure you never miss an important update like checking every hour timetable for two days ahead and notifing you if there is new canceled or substituted classes.
+
+UntisBot is a multilingual (RU/EN/DE) Telegram bot for WebUntis timetable and homework.
+
 ## Features
 
-- **Timetable**: Get your daily timetable directly in Telegram.
-- **Notifications**: Receive instant notifications about canceled classes and substitutions.
-- **Look Homework**: Keep track of your homework assignments and due dates.
+- Daily timetable in Telegram
+- Homework for the current week
+- Notifications about canceled/irregular lessons
+- Credential storage in MySQL with AES encryption
 
-## Notifications
+## Requirements
 
-UntisBot will notify you about:
-- Canceled classes
-- Substitutions
-
-Stay organized and never miss an important update with UntisBot!
+- Node.js 18+
+- MySQL 8+ (or compatible)
+- Telegram bot token
 
 ## Installation
 
-To install UntisBot, follow these steps:
-1. Clone the repository: `git clone https://github.com/primelogdev/UntisTelegramBot.git `
-2. Navigate to the project directory: `cd UntisTelegramBot`
-3. Install the required dependencies: `npm i`
-4. Set up your Telegram bot token and other configurations in the `config.json` file.
-5. Set up encrypter maps in the `./encrypter/maps.js`.(optionaly)
-6. Run the bot: `node bot.js`
+1. Clone repository:
+   ```bash
+   git clone https://github.com/Nokertin/UntisTelegramBot.git
+   cd UntisTelegramBot
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Configure `config.json`:
+   - `token`, `owner`, `errChannel`
+   - WebUntis settings: `school`, `domain`
+   - MySQL settings: `host`, `user`, `password`, `dbname`
+   - `onlyOwner` if you want private access mode
+
+4. Set encryption key (required for stable decryption after restart):
+   ```bash
+   export UNTIS_CREDENTIALS_KEY="your-long-random-secret"
+   ```
+
+5. Start bot:
+   ```bash
+   node bot.js
+   ```
+
+## Database setup
+
+The bot automatically creates/updates the `users` table on startup.
+
+If you prefer manual preparation, create database and user in MySQL, then grant access:
+```sql
+CREATE DATABASE untisbot CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'untisbot'@'%' IDENTIFIED BY 'strong_password';
+GRANT ALL PRIVILEGES ON untisbot.* TO 'untisbot'@'%';
+FLUSH PRIVILEGES;
+```
+
+After that set the same credentials in `config.json`.
 
 ## Usage
 
-Once the bot is running, you can interact with it through Telegram. Use the following commands to get started:
+### User commands
+- `/start` — open main menu
+- `/lang` — select language
 
-Users and admin:
-- `/start` - Start the bot and get a welcome message with buttons(Timetible, homework, settiongs, untis login data).
-- `/lang` - Sending a message to select a language.  
+### Admin commands
+- `/sendall` — interactive broadcast mode
+- `/sendall <message>` — one-line broadcast
+- `/getallusers` — list all user telegram IDs
+- `/getallusers data` — list users with service fields (without plaintext credentials)
 
-Only admin: 
-- `/sendall` - Asks you to provide a message to send and then sands it to all users.
-- `/sendall (message)` - sends all users (message).
-- `/getallusers` - provides list of telegram ids of all users.
-- `/getallusers data` - provides list of users with their data(without untis passwords and usernames of course).
+## Security notes
 
-## Contributing
-
-We welcome contributions! You can participate in development freely!
+- WebUntis credentials are stored encrypted (AES).
+- Keep `UNTIS_CREDENTIALS_KEY` secret.
+- Use the same key across restarts, otherwise old encrypted data cannot be decrypted.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](./License.md) file for details.
-
-## Contact
-
-If you have any questions or need further assistance, feel free to contact us at [primelog@primelog.org](mailto:primelog@primelog.org).
+MIT, see [License.md](./License.md).

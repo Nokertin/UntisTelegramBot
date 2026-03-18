@@ -23,6 +23,91 @@ const isChanging = []
 const prevData = {}
 const bot = new TelegramBot(config.token, { polling: true });
 const menuButton = (lang) => [{ text: `${lang.menu.buttons.text}`, callback_data: 'menu' }]
+const dbConfig = {
+    host: config.host,
+    user: config.user,
+    password: config.password,
+    database: config.dbname
+}
+
+const ensureUsersTable = async () => {
+    const connection = await mysql.createConnection(dbConfig);
+    try {
+        await connection.query(
+            `CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                telegramid BIGINT NOT NULL UNIQUE,
+                msgid BIGINT NOT NULL DEFAULT 0,
+                notif VARCHAR(10) NOT NULL DEFAULT 'yes',
+                lang VARCHAR(10) NULL,
+                view VARCHAR(10) NOT NULL DEFAULT 'day',
+                username_encrypted TEXT NULL,
+                password_encrypted TEXT NULL
+            )`
+        );
+
+        const [usernameColumn] = await connection.query(`SHOW COLUMNS FROM users LIKE 'username_encrypted'`);
+        if (usernameColumn.length === 0) {
+            await connection.query(`ALTER TABLE users ADD COLUMN username_encrypted TEXT NULL`);
+        }
+
+        const [passwordColumn] = await connection.query(`SHOW COLUMNS FROM users LIKE 'password_encrypted'`);
+        if (passwordColumn.length === 0) {
+            await connection.query(`ALTER TABLE users ADD COLUMN password_encrypted TEXT NULL`);
+        }
+    } finally {
+        await connection.end();
+    }
+}
+
+const clearUntisCredentials = async (connection, telegramId) => {
+    await connection.query(
+        `UPDATE users SET msgid = 0, username_encrypted = NULL, password_encrypted = NULL WHERE telegramid = ?`,
+        [telegramId]
+    );
+}
+
+const saveUntisCredentials = async (connection, telegramId, username, password) => {
+    await connection.query(
+        `UPDATE users SET username_encrypted = ?, password_encrypted = ?, msgid = CASE WHEN msgid = 0 THEN -1 ELSE msgid END WHERE telegramid = ?`,
+        [encrypt(username), encrypt(password), telegramId]
+    );
+}
+
+const getUntisCredentials = async (connection, telegramId, msgId = 0) => {
+    const [rows] = await connection.query(
+        `SELECT username_encrypted, password_encrypted, msgid FROM users WHERE telegramid = ?`,
+        [telegramId]
+    );
+
+    if (!rows[0]) {
+        return null;
+    }
+
+    if (rows[0].username_encrypted && rows[0].password_encrypted) {
+        return {
+            username: decrypt(rows[0].username_encrypted),
+            password: decrypt(rows[0].password_encrypted)
+        };
+    }
+
+    const fallbackMsgId = msgId || rows[0].msgid;
+    if (!fallbackMsgId || fallbackMsgId <= 0) {
+        return null;
+    }
+
+    try {
+        const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: fallbackMsgId });
+        await bot.deleteMessage(dataChannel, sentMessage.message_id);
+        const parsedData = JSON.parse(sentMessage.reply_to_message.text);
+        const username = decrypt(parsedData.username);
+        const password = decrypt(parsedData.pass);
+        await saveUntisCredentials(connection, telegramId, username, password);
+        return { username, password };
+    } catch (error) {
+        return null;
+    }
+}
 
 const Lang = async (chatId, msg) => {
     bot.sendMessage(chatId, `Select a language:`, {
@@ -67,16 +152,8 @@ const ShowTimetable = async (lang, currentView, username, password, chatId, msg,
                     ]
                 }
             });
-            bot.deleteMessage(dataChannel, msgId)
-            const connection = await mysql.createConnection({
-                host: config.host,
-                user: config.user,
-                password: config.password,
-                database: config.dbname
-            });
-            await connection.query(
-                `UPDATE users SET msgid = 0 WHERE telegramid = ?`, [chatId]
-            );
+            const connection = await mysql.createConnection(dbConfig);
+            await clearUntisCredentials(connection, chatId);
             connection.end()
             return
         }
@@ -184,27 +261,18 @@ const formatTimetable = (lang, timetable, view = `day`, startDate) => {
 
 const CheckCanceles = async () => {
     try {
-        const connection = await mysql.createConnection({
-            host: config.host,
-            user: config.user,
-            password: config.password,
-            database: config.dbname
-        });
+        const connection = await mysql.createConnection(dbConfig);
         const [results] = await connection.query(
             `SELECT telegramid, msgid, notif, lang FROM users WHERE telegramid`
         );
-        results.forEach(async (user) => {
+        for (const user of results) {
             const msgid = user.msgid
-            if (msgid !== 0 && user.notif === 'yes') {
-                const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgid }).catch(async () => {
-                    await connection.query(
-                        `UPDATE users SET msgid = ? WHERE telegramid = ?`, [0, user.telegramid]
-                    );
-                });
-                await bot.deleteMessage(dataChannel, sentMessage.message_id)
-                const parsedData = JSON.parse(sentMessage.reply_to_message.text)
-                const username = decrypt(parsedData.username);
-                const password = decrypt(parsedData.pass);
+            if (user.notif === 'yes') {
+                const credentials = await getUntisCredentials(connection, user.telegramid, msgid);
+                if (!credentials) {
+                    continue;
+                }
+                const { username, password } = credentials;
                 const userLang = user.lang === 'EN' ? en : user.lang === 'RU' ? ru : de
                 try {
                     const untis = new api.WebUntis(school, username, password, domain);
@@ -298,24 +366,14 @@ const CheckCanceles = async () => {
                             }
                         });
                     }
-                    getCanceles()
+                    await getCanceles()
                 } catch (e) {
                     bot.sendMessage(errChannel, `Error:\n${e.message}`)
-                    bot.deleteMessage(dataChannel, msgid)
-                    const connection = await mysql.createConnection({
-                        host: config.host,
-                        user: config.user,
-                        password: config.password,
-                        database: config.dbname
-                    });
-                    await connection.query(
-                        `UPDATE users SET msgid = 0 WHERE telegramid = ?`, [user.telegramid]
-                    );
-                    connection.end()
-                    return
+                    await clearUntisCredentials(connection, user.telegramid);
+                    continue
                 }
             }
-        });
+        }
         connection.end()
     } catch (e) {
 
@@ -324,8 +382,14 @@ const CheckCanceles = async () => {
     }
 }
 
-CheckCanceles()
-setInterval(CheckCanceles, 3600000);
+ensureUsersTable()
+    .then(() => {
+        CheckCanceles()
+        setInterval(CheckCanceles, 3600000);
+    })
+    .catch((error) => {
+        bot.sendMessage(errChannel, `ERROR DB INIT:\n${error}`);
+    });
 setInterval(() => Object.assign(prevData, {}), 86400000)
 // on messages
 bot.on('message', async (msg) => {
@@ -395,14 +459,11 @@ bot.on('message', async (msg) => {
                         if (results.length > 0) {
                             const view = results[0].view
                             const msgId = results[0].msgid
-                            if (msgId === 0) {
+                            const credentials = await getUntisCredentials(connection, chatId, msgId);
+                            if (!credentials) {
                                 bot.sendMessage(chatId, `${userLang.errors.untis_credentials_required}`)
                             } else {
-                                const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgId })
-                                bot.deleteMessage(dataChannel, sentMessage.message_id)
-                                const parsedData = JSON.parse(sentMessage.reply_to_message.text)
-                                const username = decrypt(parsedData.username);
-                                const password = decrypt(parsedData.pass);
+                                const { username, password } = credentials;
                                 ShowTimetable(userLang, view, username, password, chatId, msg, currentDate, new Date(currentTimestamp), currentTimestamp, msgId)
                             }
                         } else {
@@ -663,15 +724,12 @@ bot.on('callback_query', async (callbackQuery) => {
                 if (results.length > 0) {
                     const view = results[0].view
                     const msgId = results[0].msgid
-                    if (msgId === 0) {
+                    const credentials = await getUntisCredentials(connection, chatId, msgId);
+                    if (!credentials) {
                         bot.sendMessage(chatId, `${userLang.errors.untis_credentials_required}`)
                     } else {
                         NewView = view === 'day' ? 'week' : 'day';
-                        const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgId })
-                        bot.deleteMessage(dataChannel, sentMessage.message_id)
-                        const parsedData = JSON.parse(sentMessage.reply_to_message.text)
-                        const username = decrypt(parsedData.username);
-                        const password = decrypt(parsedData.pass);
+                        const { username, password } = credentials;
                         ShowTimetable(userLang, NewView, username, password, chatId, msg, currentDate, new Date(currentTimestamp), currentTimestamp, msgId)
                         await connection.query(
                             `UPDATE users SET view = ? WHERE telegramid = ?`, [NewView, chatId]
@@ -691,14 +749,11 @@ bot.on('callback_query', async (callbackQuery) => {
                 if (results.length > 0) {
                     const view = results[0].view
                     const msgId = results[0].msgid
-                    if (msgId === 0) {
+                    const credentials = await getUntisCredentials(connection, chatId, msgId);
+                    if (!credentials) {
                         bot.sendMessage(chatId, `${userLang.errors.untis_credentials_required}`)
                     } else {
-                        const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgId })
-                        bot.deleteMessage(dataChannel, sentMessage.message_id)
-                        const parsedData = JSON.parse(sentMessage.reply_to_message.text)
-                        const username = decrypt(parsedData.username);
-                        const password = decrypt(parsedData.pass);
+                        const { username, password } = credentials;
                         ShowTimetable(userLang, view, username, password, chatId, msg, currentDate, new Date(currentTimestamp), currentTimestamp, msgId)
                     }
                 }
@@ -790,14 +845,11 @@ bot.on('callback_query', async (callbackQuery) => {
                 if (results.length > 0) {
                     const view = results[0].view
                     const msgId = results[0].msgid
-                    if (msgId === 0) {
+                    const credentials = await getUntisCredentials(connection, chatId, msgId);
+                    if (!credentials) {
                         bot.sendMessage(chatId, `${userLang.errors.untis_credentials_required}`)
                     } else {
-                        const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgId })
-                        bot.deleteMessage(dataChannel, sentMessage.message_id)
-                        const parsedData = JSON.parse(sentMessage.reply_to_message.text)
-                        const username = decrypt(parsedData.username);
-                        const password = decrypt(parsedData.pass);
+                        const { username, password } = credentials;
                         const getPlus = () => {
                             if (view === 'day') {
                                 return +date + 86400000
@@ -831,14 +883,11 @@ bot.on('callback_query', async (callbackQuery) => {
                 if (results.length > 0) {
                     const view = results[0].view
                     const msgId = results[0].msgid
-                    if (msgId === 0) {
+                    const credentials = await getUntisCredentials(connection, chatId, msgId);
+                    if (!credentials) {
                         bot.sendMessage(chatId, `${userLang.errors.untis_credentials_required}`)
                     } else {
-                        const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgId })
-                        bot.deleteMessage(dataChannel, sentMessage.message_id)
-                        const parsedData = JSON.parse(sentMessage.reply_to_message.text)
-                        const username = decrypt(parsedData.username);
-                        const password = decrypt(parsedData.pass);
+                        const { username, password } = credentials;
                         const getMinus = () => {
                             if (view === 'day') {
                                 return +date - 86400000
@@ -865,46 +914,23 @@ bot.on('callback_query', async (callbackQuery) => {
                     const langid = results[0].lang
                     const isnotif = results[0].notif
                     let data
-                    if (msgid === 0) {
+                    const credentials = await getUntisCredentials(connection, chatId, msgid);
+                    if (!credentials) {
                         data = `${userLang.settings.no_info}`
                     } else {
-                        let stat = 1
-                        const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgid }).catch(async () => {
-                            await connection.query(
-                                `UPDATE users SET msgid = ? WHERE telegramid = ?`, [0, chatId]
-                            );
-                            stat = 0
-                        });
-                        if (stat === 1) {
-                            bot.deleteMessage(dataChannel, sentMessage.message_id)
-                            const parsedData = JSON.parse(sentMessage.reply_to_message.text)
-                            let passLength = parsedData.pass.length
-                            let pass = ''
-                            while (passLength > 0) {
-                                pass += '\\*';
-                                passLength--
-                            }
-                            data = `${decrypt(parsedData.username)}, ${pass}`
-                            try {
-                                const untis = new api.WebUntis(school, decrypt(parsedData.username), decrypt(parsedData.pass), domain);
-                                await untis.login()
-                            } catch (e) {
-                                data = `${userLang.settings.no_info}`
-                                bot.deleteMessage(dataChannel, msgid)
-                                const connection = await mysql.createConnection({
-                                    host: config.host,
-                                    user: config.user,
-                                    password: config.password,
-                                    database: config.dbname
-                                });
-                                await connection.query(
-                                    `UPDATE users SET msgid = 0 WHERE telegramid = ?`, [chatId]
-                                );
-                                connection.end()
-                                return
-                            }
-                        } else {
-                            data = `${userLang.settings.no_info}`;
+                        let passLength = credentials.password.length
+                        let pass = ''
+                        while (passLength > 0) {
+                            pass += '\\*';
+                            passLength--
+                        }
+                        data = `${credentials.username}, ${pass}`
+                        try {
+                            const untis = new api.WebUntis(school, credentials.username, credentials.password, domain);
+                            await untis.login()
+                        } catch (e) {
+                            data = `${userLang.settings.no_info}`
+                            await clearUntisCredentials(connection, chatId);
                         }
                     }
                     const lang = langid === 'RU' ? '🇷🇺Русский' : langid === 'EN' ? '🇬🇧English' : langid == 'DE' ? '🇩🇪Deutsch' : '❌No info.'
@@ -988,17 +1014,15 @@ bot.on('callback_query', async (callbackQuery) => {
                 if (results.length > 0) {
                     const msgid = results[0].msgid
                     let data = {}
-                    if (msgid === 0) {
+                    const credentials = await getUntisCredentials(connection, chatId, msgid);
+                    if (!credentials) {
                         data.isInfo = false
                         data.msgid = msgid
                     } else {
                         data.isInfo = true
-                        const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgid })
-                        bot.deleteMessage(dataChannel, sentMessage.message_id)
-                        const parsedData = JSON.parse(sentMessage.reply_to_message.text)
-                        let passLength = parsedData.pass.length
-                        data.uname = decrypt(parsedData.username);
-                        data.upass = decrypt(parsedData.pass);
+                        let passLength = credentials.password.length
+                        data.uname = credentials.username;
+                        data.upass = credentials.password;
                         let pass = ''
                         while (passLength > 0) {
                             pass += '\\*';
@@ -1017,17 +1041,7 @@ bot.on('callback_query', async (callbackQuery) => {
                             await untis.login()
                         } catch (e) {
                             isValid = false
-                            bot.deleteMessage(dataChannel, data.msgid)
-                            const connection = await mysql.createConnection({
-                                host: config.host,
-                                user: config.user,
-                                password: config.password,
-                                database: config.dbname
-                            });
-                            await connection.query(
-                                `UPDATE users SET msgid = 0 WHERE telegramid = ?`, [chatId]
-                            );
-                            connection.end()
+                            await clearUntisCredentials(connection, chatId);
                             return
                         }
                         const status = isValid ? userLang.untis_data.valid : userLang.untis_data.invalid
@@ -1140,32 +1154,9 @@ bot.on('callback_query', async (callbackQuery) => {
                             })
                         }
                         else {
-                            connection = await mysql.createConnection({
-                                host: config.host,
-                                user: config.user,
-                                password: config.password,
-                                database: config.dbname
-                            });
+                            connection = await mysql.createConnection(dbConfig);
                             try {
-                                const [results] = await connection.query(
-                                    `SELECT msgid FROM users WHERE telegramid = ?`, [chatId]
-                                );
-                                if (results[0].msgid === 0) {
-                                    const sentMsg = await bot.sendMessage(dataChannel, `{"username": "${encrypt(username)}", "pass": "${encrypt(password)}"}`)
-                                    try {
-                                        await connection.query(
-                                            `UPDATE users SET msgid = ? WHERE telegramid = ?`, [sentMsg.message_id, chatId]
-                                        );
-                                    } catch (error) {
-                                        bot.sendMessage(chatId, `${userLang.errors.unknown_error} ${error.message}`);
-                                        bot.sendMessage(errChannel, `ERROR:\nuser:${chatId}\n${error}`);
-                                    }
-                                } else {
-                                    bot.editMessageText(`{"username": "${encrypt(username)}", "pass": "${encrypt(password)}"}`, {
-                                        chat_id: dataChannel,
-                                        message_id: results[0].msgid
-                                    }).catch(() => { })
-                                }
+                                await saveUntisCredentials(connection, chatId, username, password);
                                 let pass = ''
                                 let passLength = password.length
                                 while (passLength > 0) {
@@ -1200,26 +1191,9 @@ bot.on('callback_query', async (callbackQuery) => {
                 }
             }
             try {
-                connection = await mysql.createConnection({
-                    host: config.host,
-                    user: config.user,
-                    password: config.password,
-                    database: config.dbname
-                });
-                const [results] = await connection.query(
-                    `SELECT msgid FROM users WHERE telegramid = ?`, [chatId]
-                );
-                if (results[0].msgid === 0) {
-                    bot.sendMessage(chatId, `${userLang.general.success}`, inline)
-                    connection.close
-                } else {
-                    bot.deleteMessage(dataChannel, results[0].msgid)
-                    await connection.query(
-                        `UPDATE users SET msgid = 0 WHERE telegramid = ?`, [chatId]
-                    );
-                    bot.sendMessage(chatId, `${userLang.general.success}`, inline)
-                    connection.close
-                }
+                connection = await mysql.createConnection(dbConfig);
+                await clearUntisCredentials(connection, chatId);
+                bot.sendMessage(chatId, `${userLang.general.success}`, inline)
             } catch (error) {
                 bot.sendMessage(chatId, `⛔️${error.message}`);
                 bot.sendMessage(errChannel, `ERROR:\nuser:${chatId}\n${error}`)
@@ -1232,15 +1206,13 @@ bot.on('callback_query', async (callbackQuery) => {
 
                 if (results.length > 0) {
                     const msgid = results[0].msgid;
-                    if (msgid === 0) {
+                    const credentials = await getUntisCredentials(connection, chatId, msgid);
+                    if (!credentials) {
                         return bot.sendMessage(chatId, `${userLang.errors.untis_credentials_required}`)
                     }
-                    const sentMessage = await bot.sendMessage(dataChannel, '.', { reply_to_message_id: msgid });
-                    bot.deleteMessage(dataChannel, sentMessage.message_id);
-                    const parsedData = JSON.parse(sentMessage.reply_to_message.text);
                     let untis
                     try {
-                        untis = new api.WebUntis(school, decrypt(parsedData.username), decrypt(parsedData.pass), domain);
+                        untis = new api.WebUntis(school, credentials.username, credentials.password, domain);
                         await untis.login();
                     } catch (e) {
                         bot.sendMessage(chatId, userLang.errors.login, {
@@ -1252,17 +1224,7 @@ bot.on('callback_query', async (callbackQuery) => {
                             }
                         });
                         bot.sendMessage(errChannel, `ERROR login:\nuser: ${chatId}\n${e}`)
-                        bot.deleteMessage(dataChannel, msgid)
-                        const connection = await mysql.createConnection({
-                            host: config.host,
-                            user: config.user,
-                            password: config.password,
-                            database: config.dbname
-                        });
-                        await connection.query(
-                            `UPDATE users SET msgid = 0 WHERE telegramid = ?`, [chatId]
-                        );
-                        connection.end()
+                        await clearUntisCredentials(connection, chatId);
                         return
                     }
                     const result = await untis.getHomeWorksFor(new Date(currentTimestamp), new Date(currentTimestamp + 86400000 * 7));
