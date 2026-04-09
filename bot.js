@@ -5,6 +5,20 @@ const TelegramBot = require('node-telegram-bot-api');
 const dateTools = require('date-fns')
 const config = require('./config.json');
 
+// ---------------------------------------------------------
+//  V1 DEPRECATION & STABILITY CHECK
+// ---------------------------------------------------------
+
+if (config.ignoreOutdatedVersion !== true) {
+    console.log("\x1b[31m%s\x1b[0m", "###################################################################");
+    console.log("\x1b[31m%s\x1b[0m", "#  CRITICAL: UNTIS-BOT V1 IS NO LONGER STABLE                     #");
+    console.log("\x1b[33m%s\x1b[0m", "#  MIGRATE TO V2: https://github.com/siakinnik/UntisTelegramBotV2 #");
+    console.log("\x1b[31m%s\x1b[0m", "###################################################################");
+    console.log("\n[!] Execution halted to prevent API instability.");
+    console.log("[!] To bypass this (not recommended), set \"ignoreOutdatedVersion\": true in config.json\n");
+    process.exit(1);
+}
+
 const ru = require('./ru.json');
 const en = require('./en.json');
 const de = require('./de.json');
